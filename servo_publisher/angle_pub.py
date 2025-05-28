@@ -3,17 +3,21 @@ import rclpy
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+# ======= 可調整舵機數量 =======
+NUM_SERVOS = 12
+
 class ServoTrajectoryPublisher(Node):
     def __init__(self):
         super().__init__('servo_trajectory_publisher')
         self.pub = self.create_publisher(JointTrajectory, '/servo_trajectory', 10)
-        # 先記住兩個 servo 的目前角度（初始都 0°）
-        self.positions = [0.0, 0.0]
-        self.get_logger().info('輸入 q 離開')
+        # 初始各舵機角度都設為 0°
+        self.positions = [90.0] * NUM_SERVOS
+        self.get_logger().info(f'輸入 q 離開；可控制 1–{NUM_SERVOS} 號舵機')
 
     def publish_joint_trajectory(self):
         msg = JointTrajectory()
-        msg.joint_names = ['servo_1', 'servo_2']
+        # joint_names 清單用 1~NUM_SERVOS
+        msg.joint_names = [f'servo_{i}' for i in range(1, NUM_SERVOS+1)]
         pt = JointTrajectoryPoint()
         pt.positions = self.positions.copy()
         pt.time_from_start.sec = 0
@@ -25,11 +29,11 @@ class ServoTrajectoryPublisher(Node):
     def run_menu(self):
         try:
             while rclpy.ok():
-                choice = input('\n選擇要控制哪顆舵機 (1 or 2, q = quit)：').strip()
+                choice = input(f'\n選擇要控制哪顆舵機 (1–{NUM_SERVOS}, q = 離開)：').strip()
                 if choice.lower() == 'q':
                     break
-                if choice not in ('1', '2'):
-                    print('輸入錯誤，請輸入 1、2 或 q。')
+                if not choice.isdigit() or not (1 <= int(choice) <= NUM_SERVOS):
+                    print(f'輸入錯誤，請輸入 1 到 {NUM_SERVOS} 或 q。')
                     continue
                 idx = int(choice) - 1
                 self.angle_menu(idx)
@@ -50,7 +54,7 @@ class ServoTrajectoryPublisher(Node):
                 print('角度範圍錯誤，請輸入 0 到 240 之間，或 b 返回。')
                 continue
 
-            # 更新並發佈
+            # 更新角度並發佈
             self.positions[idx] = ang
             self.publish_joint_trajectory()
 
