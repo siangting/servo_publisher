@@ -2,19 +2,17 @@
 import rclpy
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from std_msgs.msg import String
 
 import yaml
 import time
-import sys
-import tty
-import termios
 import threading
 import os
 
 
 class TeleopGaitRunner(Node):
     def __init__(self):
-        super().__init__("teleop_gait")
+        super().__init__("teleop_gait_runner")
 
         # =============== ROS Parameters ====================
         self.declare_parameter("gait_file", "three_joints_six_leg_gait.yaml")
@@ -34,6 +32,14 @@ class TeleopGaitRunner(Node):
         # =============== ROS Publisher ======================
         self.pub = self.create_publisher(JointTrajectory, "/servo_trajectory", 10)
 
+        # =============== ROS Subscriber ======================
+        self.sub_cmd = self.create_subscription(
+            String,
+            "/teleop_cmd",
+            self.cmd_callback,
+            10
+        )
+
         # =============== Map command → YAML key =============
         self.command_map = {
             "forward": "Move foreward",
@@ -46,45 +52,23 @@ class TeleopGaitRunner(Node):
         # =============== Current Command ====================
         self.current_cmd = "stop"
 
-        # =============== Start threads ======================
-        self.key_thread = threading.Thread(target=self.keyboard_loop, daemon=True)
-        self.key_thread.start()
-
+        # =============== Worker Thread ======================
         self.action_thread = threading.Thread(target=self.action_loop, daemon=True)
         self.action_thread.start()
 
-        self.get_logger().info("Teleop Ready! (W/A/S/D, Z=Base pose, Q=Quit)")
+        self.get_logger().info("Teleop Ready! Listening to /teleop_cmd")
 
     # ------------------------------------------------------
-    # KEYBOARD HANDLING
+    # RECEIVE COMMAND FROM JOYSTICK NODE
     # ------------------------------------------------------
-    def get_key(self):
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            key = sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        return key
+    def cmd_callback(self, msg: String):
+        cmd = msg.data.strip()
 
-    def keyboard_loop(self):
-        while True:
-            key = self.get_key().lower()
-
-            if key == 'w':
-                self.current_cmd = "forward"
-            elif key == 's':
-                self.current_cmd = "backward"
-            elif key == 'a':
-                self.current_cmd = "turn_left"
-            elif key == 'd':
-                self.current_cmd = "turn_right"
-            elif key == 'z':
-                self.current_cmd = "stop"
-            elif key == 'q':
-                print("Exiting teleop...")
-                os._exit(0)
+        if cmd in self.command_map:
+            self.current_cmd = cmd
+            self.get_logger().info(f"[CMD] {cmd}")
+        else:
+            self.get_logger().warn(f"Unknown command: {cmd}")
 
     # ------------------------------------------------------
     # ACTION LOOP (continuous)
@@ -106,9 +90,8 @@ class TeleopGaitRunner(Node):
             return
 
         for pose in poses:
-            # If the user changed command mid-way, stop early
             if cmd != self.current_cmd:
-                return
+                return  # user switched command mid-way
 
             pose_f = [float(x) for x in pose]
 
