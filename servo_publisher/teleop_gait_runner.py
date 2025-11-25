@@ -16,18 +16,32 @@ class TeleopGaitRunner(Node):
 
         # =============== ROS Parameters ====================
         self.declare_parameter("gait_file", "three_joints_six_leg_gait.yaml")
+        self.declare_parameter("command_map_file", "command_map.yaml")
         self.declare_parameter("interval", 0.3)
 
         gait_path = self.get_parameter("gait_file").get_parameter_value().string_value
+        command_map_path = self.get_parameter("command_map_file").get_parameter_value().string_value
         self.interval = self.get_parameter("interval").get_parameter_value().double_value
 
-        # =============== Load YAML ==========================
+        # =============== Load GAIT YAML ==========================
         if not os.path.exists(gait_path):
             self.get_logger().error(f"Gait file not found: {gait_path}")
             raise SystemExit
 
         with open(gait_path, "r") as f:
             self.gait_data = yaml.safe_load(f)
+
+        # =============== Load COMMAND MAP YAML ====================
+        if not os.path.exists(command_map_path):
+            self.get_logger().error(f"Command map file not found: {command_map_path}")
+            raise SystemExit
+
+        with open(command_map_path, "r") as f:
+            self.command_map = yaml.safe_load(f).get("command_map", {})
+
+        if not self.command_map:
+            self.get_logger().error("command_map.yaml did not contain 'command_map'")
+            raise SystemExit
 
         # =============== ROS Publisher ======================
         self.pub = self.create_publisher(JointTrajectory, "/servo_trajectory", 10)
@@ -39,15 +53,6 @@ class TeleopGaitRunner(Node):
             self.cmd_callback,
             10
         )
-
-        # =============== Map command → YAML key =============
-        self.command_map = {
-            "forward": "Move foreward",
-            "backward": "Move backward",
-            "turn_left": "Turn left",
-            "turn_right": "Turn right",
-            "stop": "Base pose"
-        }
 
         # =============== Current Command ====================
         self.current_cmd = "stop"
