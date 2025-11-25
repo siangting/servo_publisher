@@ -12,3 +12,4 @@ command_map:
   joy_down_left: "Joy Down Left"
   joy_left: "Joy Left"
   joy_up_left: "Joy Up Left"
+  crab_sway: "Crab swaying" 

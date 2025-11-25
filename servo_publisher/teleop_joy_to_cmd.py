@@ -49,6 +49,17 @@ class JoyToCommand(Node):
         if msg.buttons[1] == 1:
             self._send_cmd("stop")
             return
+            
+        if msg.buttons[0] == 1:   # X
+            self._send_cmd("crab_sway")
+            return
+        # ============================================================
+        # X → crab_sway
+        # ============================================================
+        if msg.buttons[0] == 1:   # X button
+            self._send_cmd("crab_sway")
+            return
+
 
         # ---------------------------------------------------
         # D-Pad
