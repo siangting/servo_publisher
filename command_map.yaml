@@ -4,3 +4,5 @@ command_map:
   turn_left: "Turn left"
   turn_right: "Turn right"
   stop: "Base pose"
+  rb_mode: "RB Mode"
+  lb_mode: "LB Mode"

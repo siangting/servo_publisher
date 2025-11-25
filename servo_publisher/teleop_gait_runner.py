@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 
 import yaml
 import time
@@ -14,7 +14,7 @@ class TeleopGaitRunner(Node):
     def __init__(self):
         super().__init__("teleop_gait_runner")
 
-        # =============== ROS Parameters ====================
+        # ================= ROS Parameters ====================
         self.declare_parameter("gait_file", "three_joints_six_leg_gait.yaml")
         self.declare_parameter("command_map_file", "command_map.yaml")
         self.declare_parameter("interval", 0.3)
@@ -23,97 +23,118 @@ class TeleopGaitRunner(Node):
         command_map_path = self.get_parameter("command_map_file").get_parameter_value().string_value
         self.interval = self.get_parameter("interval").get_parameter_value().double_value
 
-        # =============== Load GAIT YAML ==========================
-        if not os.path.exists(gait_path):
-            self.get_logger().error(f"Gait file not found: {gait_path}")
-            raise SystemExit
-
+        # ================= Load GAIT YAML =====================
         with open(gait_path, "r") as f:
             self.gait_data = yaml.safe_load(f)
-
-        # =============== Load COMMAND MAP YAML ====================
-        if not os.path.exists(command_map_path):
-            self.get_logger().error(f"Command map file not found: {command_map_path}")
-            raise SystemExit
 
         with open(command_map_path, "r") as f:
             self.command_map = yaml.safe_load(f).get("command_map", {})
 
-        if not self.command_map:
-            self.get_logger().error("command_map.yaml did not contain 'command_map'")
-            raise SystemExit
+        # ================= Load Poses =========================
+        self.base_pose = self.gait_data.get("Base pose", [[]])[0]
+        self.lb_pose   = self.gait_data.get("LB Mode", [[]])[0]
+        self.rb_pose   = self.gait_data.get("RB Mode", [[]])[0]
 
-        # =============== ROS Publisher ======================
+        if not self.base_pose or not self.lb_pose or not self.rb_pose:
+            raise RuntimeError("Missing Base pose / LB Mode / RB Mode in YAML!")
+
+        # ================= ROS Pub/Sub ========================
         self.pub = self.create_publisher(JointTrajectory, "/servo_trajectory", 10)
 
-        # =============== ROS Subscriber ======================
-        self.sub_cmd = self.create_subscription(
-            String,
-            "/teleop_cmd",
-            self.cmd_callback,
-            10
-        )
+        self.sub_cmd = self.create_subscription(String, "/teleop_cmd", self.cmd_callback, 10)
+        self.sub_lt  = self.create_subscription(Float32, "/lt_value", self.lt_callback, 10)
+        self.sub_rt  = self.create_subscription(Float32, "/rt_value", self.rt_callback, 10)
 
-        # =============== Current Command ====================
+        # ================= States =============================
         self.current_cmd = "stop"
+        self.lt_value = 0.0
+        self.rt_value = 0.0
 
-        # =============== Worker Thread ======================
+        # ================= Worker Thread ======================
         self.action_thread = threading.Thread(target=self.action_loop, daemon=True)
         self.action_thread.start()
 
-        self.get_logger().info("Teleop Ready! Listening to /teleop_cmd")
+        self.get_logger().info("Teleop Ready with simultaneous LT + RT interpolation!")
 
-    # ------------------------------------------------------
-    # RECEIVE COMMAND FROM JOYSTICK NODE
     # ------------------------------------------------------
     def cmd_callback(self, msg: String):
         cmd = msg.data.strip()
-
         if cmd in self.command_map:
             self.current_cmd = cmd
-            self.get_logger().info(f"[CMD] {cmd}")
-        else:
-            self.get_logger().warn(f"Unknown command: {cmd}")
 
     # ------------------------------------------------------
-    # ACTION LOOP (continuous)
+    def lt_callback(self, msg: Float32):
+        self.lt_value = max(0.0, min(1.0, float(msg.data)))
+
+    # ------------------------------------------------------
+    def rt_callback(self, msg: Float32):
+        self.rt_value = max(0.0, min(1.0, float(msg.data)))
+
     # ------------------------------------------------------
     def action_loop(self):
         while True:
-            self.run_gait(self.current_cmd)
+            # If LT or RT active → apply interpolation before gait
+            if self.lt_value > 0.01 or self.rt_value > 0.01:
+                self.run_combined_interpolation()
+            else:
+                self.run_gait(self.current_cmd)
 
     # ------------------------------------------------------
-    # EXECUTE GAIT
+    # Apply LT interpolation (Base → LB)
+    # Apply RT interpolation (Base → RB)
+    # Combine both results
+    # ------------------------------------------------------
+    def run_combined_interpolation(self):
+        pose = []
+
+        for b, L, R in zip(self.base_pose, self.lb_pose, self.rb_pose):
+            angle = b
+
+            # LT interpolation
+            if self.lt_value > 0.01:
+                angle += (L - b) * self.lt_value
+
+            # RT interpolation
+            if self.rt_value > 0.01:
+                angle += (R - b) * self.rt_value
+
+            pose.append(angle)
+
+        self.publish_pose(pose)
+        time.sleep(self.interval)
+
+    # ------------------------------------------------------
+    # Normal gait (forward/back/turn)
     # ------------------------------------------------------
     def run_gait(self, cmd):
-        if cmd not in self.command_map:
+        yaml_key = self.command_map.get(cmd, None)
+        if yaml_key is None:
             return
 
-        yaml_key = self.command_map[cmd]
         poses = self.gait_data.get(yaml_key, None)
         if poses is None:
             return
 
         for pose in poses:
             if cmd != self.current_cmd:
-                return  # user switched command mid-way
+                return
 
-            pose_f = [float(x) for x in pose]
-
-            msg = JointTrajectory()
-            msg.joint_names = [f"servo_{i+1}" for i in range(len(pose_f))]
-            pt = JointTrajectoryPoint()
-            pt.positions = pose_f
-            pt.time_from_start.sec = 1
-            msg.points.append(pt)
-
-            self.pub.publish(msg)
+            self.publish_pose([float(x) for x in pose])
             time.sleep(self.interval)
 
+    # ------------------------------------------------------
+    def publish_pose(self, pose):
+        msg = JointTrajectory()
+        msg.joint_names = [f"servo_{i+1}" for i in range(len(pose))]
 
-# ----------------------------------------------------------
-# MAIN
-# ----------------------------------------------------------
+        pt = JointTrajectoryPoint()
+        pt.positions = pose
+        pt.time_from_start.sec = 1
+
+        msg.points.append(pt)
+        self.pub.publish(msg)
+
+
 def main():
     rclpy.init()
     node = TeleopGaitRunner()
