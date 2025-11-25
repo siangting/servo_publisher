@@ -1,14 +1,5 @@
 #!/bin/bash
 
-echo "Press r to run..."
-read -n 1 key
-echo ""
-
-if [ "$key" != "r" ]; then
-    echo "Not running."
-    exit 0
-fi
-
 SESSION="spider_teleop"
 
 # 如果 session 已存在 → 先 kill 掉
