@@ -18,10 +18,12 @@ class TeleopGaitRunner(Node):
         self.declare_parameter("gait_file", "three_joints_six_leg_gait.yaml")
         self.declare_parameter("command_map_file", "command_map.yaml")
         self.declare_parameter("interval", 0.3)
+        self.declare_parameter("repeat_one_shot", 3)  # 每組角度重複次數
 
         gait_path = self.get_parameter("gait_file").get_parameter_value().string_value
         command_map_path = self.get_parameter("command_map_file").get_parameter_value().string_value
         self.interval = self.get_parameter("interval").get_parameter_value().double_value
+        self.repeat_one_shot = self.get_parameter("repeat_one_shot").get_parameter_value().integer_value
 
         # ================= Load YAMLs ==========================
         with open(gait_path, "r") as f:
@@ -49,134 +51,100 @@ class TeleopGaitRunner(Node):
         self.current_cmd = "stop"
         self.lt_value = 0.0
         self.rt_value = 0.0
-        self.one_shot_cmd = None  # ⭐ 用來執行像 crab_sway 這類一次性 gait
+        self.one_shot_cmd = None  # 用來執行一次性 gait
 
         # ================= Worker Thread ======================
         self.action_thread = threading.Thread(target=self.action_loop, daemon=True)
         self.action_thread.start()
 
-        self.get_logger().info("Teleop Ready with LT/RT interpolation + one-shot gait support!")
+        self.get_logger().info("Teleop Ready with LT/RT interpolation + one-shot gaits!")
 
-    # ------------------------------------------------------
+    # ------------------ Callback --------------------------
     def cmd_callback(self, msg: String):
         cmd = msg.data.strip()
-
-        # ⭐ one-shot gait（例如 crab_sway）
-        if cmd == "crab_sway":
-            self.one_shot_cmd = cmd
-            return
-
-        # ⭐ normal command
         if cmd in self.command_map:
-            self.current_cmd = cmd
+            if cmd == "crab_sway":
+                self.one_shot_cmd = cmd
+            else:
+                self.current_cmd = cmd
 
-    # ------------------------------------------------------
     def lt_callback(self, msg: Float32):
-        self.lt_value = max(0.0, min(1.0, float(msg.data)))
+        self.lt_value = float(msg.data)
 
-    # ------------------------------------------------------
     def rt_callback(self, msg: Float32):
-        self.rt_value = max(0.0, min(1.0, float(msg.data)))
+        self.rt_value = float(msg.data)
 
-    # ------------------------------------------------------
+    # ------------------ Action Loop -----------------------
     def action_loop(self):
         while True:
-
-            # ================================
-            #  ⭐ First: one-shot motion
-            # ================================
             if self.one_shot_cmd:
+                # run one-shot gait once
                 self.run_one_shot(self.one_shot_cmd)
                 self.one_shot_cmd = None
-
+                # 回到 Base pose
+                self.publish_pose(self.base_pose)
                 time.sleep(self.interval)
-                continue
+            else:
+                # run normal gait
+                self.run_gait(self.current_cmd)
 
-            # ================================
-            #  ⭐ Second: LT/RT interpolation
-            # ================================
-            if self.lt_value > 0.01 or self.rt_value > 0.01:
-                self.run_combined_interpolation()
-                continue
+            time.sleep(0.01)
 
-            # ================================
-            #  ⭐ Third: normal gait
-            # ================================
-            self.run_gait(self.current_cmd)
-
-    # ------------------------------------------------------
-    # ⭐ One-shot gait (e.g., crab_sway)
-    # ------------------------------------------------------
-    def run_one_shot(self, cmd):
-        yaml_key = self.command_map.get(cmd, None)
-        if yaml_key is None:
+    # ------------------ Run Normal Gait -------------------
+    def run_gait(self, cmd):
+        gait_name = self.command_map.get(cmd, None)
+        if gait_name is None:
             return
 
-        poses = self.gait_data.get(yaml_key, None)
+        poses = self.gait_data.get(gait_name, None)
+        if poses is None:
+            return
+
+        for pose in poses:
+            # 內插 LT/RT
+            pose_f = []
+            for i, val in enumerate(pose):
+                val_f = float(val)
+                # LB 改變舵機 15~19 (示意)
+                val_f = val_f + (self.lb_pose[i] - self.base_pose[i]) * self.lt_value
+                # RB 改變舵機 15~19 (示意)
+                val_f = val_f + (self.rb_pose[i] - self.base_pose[i]) * self.rt_value
+                pose_f.append(val_f)
+
+            self.publish_pose(pose_f)
+            time.sleep(self.interval)
+
+    # ------------------ Run One-Shot Gait -----------------
+    def run_one_shot(self, cmd):
+        gait_name = self.command_map.get(cmd, None)
+        if gait_name is None:
+            return
+
+        poses = self.gait_data.get(gait_name, None)
         if poses is None:
             return
 
         for pose in poses:
             pose_f = [float(x) for x in pose]
-
-            # ⭐ 每組 pose 重複發送 3 次
-            for _ in range(3):
+            # ⭐ 每組 pose 發送 repeat_one_shot 次
+            for _ in range(self.repeat_one_shot):
                 self.publish_pose(pose_f)
                 time.sleep(self.interval)
 
-    # ------------------------------------------------------
-    # ⭐ Combined LT/RT interpolation
-    # ------------------------------------------------------
-    def run_combined_interpolation(self):
-        pose = []
-
-        for b, L, R in zip(self.base_pose, self.lb_pose, self.rb_pose):
-            angle = b
-
-            # LT interpolation
-            angle += (L - b) * self.lt_value
-
-            # RT interpolation
-            angle += (R - b) * self.rt_value
-
-            pose.append(angle)
-
-        self.publish_pose(pose)
-        time.sleep(self.interval)
-
-    # ------------------------------------------------------
-    # ⭐ Normal gait (forward/back/turn/joystick directions)
-    # ------------------------------------------------------
-    def run_gait(self, cmd):
-        yaml_key = self.command_map.get(cmd, None)
-        if yaml_key is None:
-            return
-
-        poses = self.gait_data.get(yaml_key, None)
-        if poses is None:
-            return
-
-        for pose in poses:
-            if cmd != self.current_cmd:
-                return
-            self.publish_pose([float(x) for x in pose])
-            time.sleep(self.interval)
-
-    # ------------------------------------------------------
+    # ------------------ Publish Pose ----------------------
     def publish_pose(self, pose):
         msg = JointTrajectory()
-        msg.joint_names = [f"servo_{i+1}" for i in range(len(pose))]
-
-        pt = JointTrajectoryPoint()
-        pt.positions = pose
-        pt.time_from_start.sec = 1
-
-        msg.points.append(pt)
+        msg.joint_names = [f"joint{i+1}" for i in range(len(pose))]
+        point = JointTrajectoryPoint()
+        point.positions = [float(x) for x in pose]
+        point.time_from_start.sec = 0
+        point.time_from_start.nanosec = 0
+        msg.points.append(point)
         self.pub.publish(msg)
 
 
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
     node = TeleopGaitRunner()
     rclpy.spin(node)
     node.destroy_node()

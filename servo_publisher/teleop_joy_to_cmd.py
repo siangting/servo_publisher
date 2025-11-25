@@ -35,6 +35,7 @@ class JoyToCommand(Node):
         rt_value = (1.0 - rt_raw) * 0.5
         self.pub_rt.publish(Float32(data=rt_value))
 
+
         # ---------------------------------------------------
         # RB / LB / B
         # ---------------------------------------------------
@@ -49,18 +50,11 @@ class JoyToCommand(Node):
         if msg.buttons[1] == 1:
             self._send_cmd("stop")
             return
-            
+
         if msg.buttons[0] == 1:   # X
             self._send_cmd("crab_sway")
             return
-        # ============================================================
-        # X → crab_sway
-        # ============================================================
-        if msg.buttons[0] == 1:   # X button
-            self._send_cmd("crab_sway")
-            return
-
-
+            
         # ---------------------------------------------------
         # D-Pad
         # ---------------------------------------------------
@@ -81,38 +75,60 @@ class JoyToCommand(Node):
             return
 
         # ---------------------------------------------------
-        # 左搖桿六向動作（已修正方向）
+        # ⭐ 左搖桿：前進 / 後退 / 左轉 / 右轉
         # ---------------------------------------------------
-        lx = -msg.axes[0]     # 反轉左右
-        ly = -msg.axes[1]     # 反轉上下
+        lx = msg.axes[0]
+        ly = msg.axes[1]
 
         dz = self.deadzone
+
+        if ly < -dz:           # 上推
+            self._send_cmd("forward")
+            return
+        elif ly > dz:          # 下推
+            self._send_cmd("backward")
+            return
+        elif lx > dz:          # 右推
+            self._send_cmd("turn_right")
+            return
+        elif lx < -dz:         # 左推
+            self._send_cmd("turn_left")
+            return
+
+
+        # ---------------------------------------------------
+        # ⭐ 右搖桿六向動作（方向已反轉）
+        # ---------------------------------------------------
+        rx = -msg.axes[3]  # 左右
+        ry = -msg.axes[4]  # 上下
+
         cmd = None
 
-        if lx > dz:
-            if ly < -dz:
+        if rx > dz:
+            if ry < -dz:
                 cmd = "joy_up_right"
-            elif ly > dz:
+            elif ry > dz:
                 cmd = "joy_down_right"
             else:
                 cmd = "joy_right"
 
-        elif lx < -dz:
-            if ly < -dz:
+        elif rx < -dz:
+            if ry < -dz:
                 cmd = "joy_up_left"
-            elif ly > dz:
+            elif ry > dz:
                 cmd = "joy_down_left"
             else:
                 cmd = "joy_left"
 
-        elif ly < -dz:
+        elif ry < -dz:
             cmd = "joy_up"
 
-        elif ly > dz:
+        elif ry > dz:
             cmd = "joy_down"
 
         if cmd:
             self._send_cmd(cmd)
+
 
     # ---------------------------------------------------
     def _send_cmd(self, cmd):
